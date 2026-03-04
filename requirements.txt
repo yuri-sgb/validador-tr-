@@ -1,7 +1,5 @@
-streamlit==1.32.2
-pdfplumber==0.10.3
-beautifulsoup4==4.12.3
-lxml
-pandas
+streamlit
+pdfplumber
+beautifulsoup4
 python-docx
 openpyxl
