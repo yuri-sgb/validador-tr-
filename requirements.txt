@@ -1,4 +1,4 @@
-streamlit
+streamlit//
 pdfplumber
 beautifulsoup4
 python-docx
