@@ -1,140 +1,183 @@
+
+==========================================//
+
+
 import streamlit as st
-import pdfplumber
 import re
+import pandas as pd
 from bs4 import BeautifulSoup
 from io import BytesIO
 from docx import Document
-from openpyxl import Workbook
 
-st.set_page_config(page_title="Validador TR", layout="wide")
+st.set_page_config(layout="wide")
 
-st.title("Validador Automático de Descritivo - TR")
+st.title("Reorganizador Inteligente de Descritivo Técnico")
 
-# ==========================
-# Extrair ordem da tabela
-# ==========================
+# ==============================
+# ESCOLHA DA FONTE OFICIAL
+# ==============================
 
-def extrair_ordem_tabela(pdf_file):
-    ordem = []
+fonte = st.radio(
+    "Selecione a fonte oficial da ordem:",
+    ["HTML (Tabela do TR)", "Manual"]
+)
 
-    with pdfplumber.open(pdf_file) as pdf:
-        for pagina in pdf.pages:
-            tabelas = pagina.extract_tables()
-            for tabela in tabelas:
-                for linha in tabela:
-                    if linha and len(linha) >= 3:
-                        numero = str(linha[0]).strip()
-                        catmat = str(linha[2]).strip()
+html_file = st.file_uploader("Enviar HTML completo (tabela + descritivo)", type=["html", "txt"])
 
-                        if numero.isdigit() and catmat.isdigit():
-                            ordem.append({
-                                "numero": int(numero),
-                                "catmat": catmat
-                            })
+ordem_oficial = {}
+ordem_confirmada = False
 
-    vistos = set()
-    ordem_filtrada = []
-    for item in ordem:
-        if item["catmat"] not in vistos:
-            ordem_filtrada.append(item)
-            vistos.add(item["catmat"])
+# ==============================
+# EXTRAÇÃO DA ORDEM PELO HTML
+# ==============================
 
-    return ordem_filtrada
+def extrair_ordem_html(html):
+    soup = BeautifulSoup(html, "lxml")
+    tabela = soup.find("table")
+    ordem = {}
 
+    if tabela:
+        linhas = tabela.find_all("tr")
+        for linha in linhas:
+            colunas = linha.find_all("td")
+            if len(colunas) >= 3:
+                numero = colunas[0].get_text(strip=True)
+                catmat = colunas[2].get_text(strip=True)
+                if numero.isdigit() and catmat.isdigit():
+                    ordem[catmat] = int(numero)
+    return ordem
 
-# ==========================
-# Extrair blocos do HTML
-# ==========================
+# ==============================
+# ORDEM MANUAL
+# ==============================
 
-def extrair_blocos(html):
-    soup = BeautifulSoup(html, "html.parser")
-    blocos = {}
+if fonte == "Manual":
+    texto_manual = st.text_area(
+        "Cole no formato:\n1 - 430290\n2 - 250363",
+        height=200
+    )
 
-    itens = soup.find_all("p", class_="Item_Nivel2")
+    if st.button("Gerar Ordem Manual"):
+        linhas = texto_manual.split("\n")
+        for linha in linhas:
+            if "-" in linha:
+                partes = linha.split("-")
+                numero = partes[0].strip()
+                catmat = partes[1].strip()
+                if numero.isdigit() and catmat.isdigit():
+                    ordem_oficial[catmat] = int(numero)
 
-    for item in itens:
-        texto = item.get_text()
-        catmat_match = re.search(r'CATMAT:\s*(\d+)', texto)
+        ordem_confirmada = True
 
-        if catmat_match:
-            catmat = catmat_match.group(1)
-            bloco_html = str(item)
+# ==============================
+# ORDEM VIA HTML
+# ==============================
 
-            next_node = item.find_next_sibling()
+if fonte == "HTML (Tabela do TR)" and html_file:
+    html_content = html_file.read().decode("utf-8", errors="ignore")
+    ordem_oficial = extrair_ordem_html(html_content)
 
-            while next_node and not (
-                next_node.name == "p" and
-                "Item_Nivel2" in (next_node.get("class") or [])
-            ):
-                bloco_html += str(next_node)
-                next_node = next_node.find_next_sibling()
+    if ordem_oficial:
+        df_ordem = pd.DataFrame(
+            [{"CATMAT": k, "Número Oficial": v} for k, v in ordem_oficial.items()]
+        ).sort_values("Número Oficial")
 
-            blocos[catmat] = bloco_html
+        st.subheader("Ordem detectada na Tabela")
+        st.dataframe(df_ordem)
 
-    return blocos
+        if st.button("Confirmar Ordem da Tabela"):
+            ordem_confirmada = True
 
+# ==============================
+# PROCESSAMENTO DO DESCRITIVO
+# ==============================
 
-# ==========================
-# Reorganizar
-# ==========================
+def separar_blocos(html):
+    return re.split(r'(?=<p class="Item_Nivel2">)', html)
 
-def reorganizar(pdf_file, html):
+def extrair_catmat(bloco):
+    match = re.search(r'CATMAT:</strong>\s*(\d+)', bloco)
+    return match.group(1) if match else None
 
-    ordem = extrair_ordem_tabela(pdf_file)
-    blocos = extrair_blocos(html)
+def substituir_numero(bloco, novo_numero):
+    return re.sub(
+        r'(<strong[^>]*>Item\s*)\d+(:</strong>)',
+        rf'\g<1>{novo_numero}\2',
+        bloco,
+        count=1
+    )
 
-    resultado = ""
+# ==============================
+# APLICAR CORREÇÃO
+# ==============================
 
-    for item in ordem:
-        numero = item["numero"]
-        catmat = item["catmat"]
+if ordem_confirmada and html_file:
+    st.success("Ordem oficial confirmada.")
 
-        if catmat in blocos:
-            bloco_original = blocos[catmat]
+    if st.button("Aplicar Correção ao Descritivo"):
 
-            bloco_corrigido = re.sub(
-                r'Item\s*\d+:',
-                f'Item {numero:02d}:',
-                bloco_original
-            )
+        html_content = html_file.read().decode("utf-8", errors="ignore")
+        blocos = separar_blocos(html_content)
 
-            resultado += bloco_corrigido + "<br><br>"
+        blocos_por_catmat = {}
 
-    return resultado
+        for bloco in blocos:
+            catmat = extrair_catmat(bloco)
+            if catmat:
+                blocos_por_catmat[catmat] = bloco
 
+        novo_html = ""
 
-# ==========================
-# Interface
-# ==========================
+        for catmat, numero_correto in sorted(ordem_oficial.items(), key=lambda x: x[1]):
+            if catmat in blocos_por_catmat:
+                bloco_original = blocos_por_catmat[catmat]
+                bloco_corrigido = substituir_numero(bloco_original, numero_correto)
+                novo_html += bloco_corrigido
 
-pdf_file = st.file_uploader("Envie o PDF com a tabela", type=["pdf"])
-html_file = st.file_uploader("Envie o HTML do descritivo", type=["html", "txt"])
+        st.subheader("Pré-visualização do HTML corrigido")
+        st.code(novo_html[:3000], language="html")
 
-if pdf_file and html_file:
-
-    html_content = html_file.read().decode("utf-8")
-
-    if st.button("Processar"):
-
-        resultado = reorganizar(pdf_file, html_content)
-
-        html_final = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta charset="UTF-8">
-        </head>
-        <body>
-        {resultado}
-        </body>
-        </html>
-        """
-
-        st.success("Processado com sucesso!")
+        # ==============================
+        # DOWNLOAD HTML
+        # ==============================
 
         st.download_button(
-            "Baixar HTML Final",
-            html_final,
-            "descritivo_corrigido.html",
-            "text/html"
+            "Baixar HTML Corrigido",
+            novo_html,
+            file_name="descritivo_corrigido.html",
+            mime="text/html"
+        )
+
+        # ==============================
+        # GERAR WORD
+        # ==============================
+
+        doc = Document()
+        doc.add_paragraph("Descritivo Técnico Corrigido")
+        doc.add_paragraph(novo_html)
+
+        buffer_word = BytesIO()
+        doc.save(buffer_word)
+
+        st.download_button(
+            "Baixar Word",
+            buffer_word.getvalue(),
+            file_name="descritivo_corrigido.docx"
+        )
+
+        # ==============================
+        # GERAR EXCEL ORDEM
+        # ==============================
+
+        df_export = pd.DataFrame(
+            [{"CATMAT": k, "Número Oficial": v} for k, v in ordem_oficial.items()]
+        ).sort_values("Número Oficial")
+
+        buffer_excel = BytesIO()
+        df_export.to_excel(buffer_excel, index=False)
+
+        st.download_button(
+            "Baixar Excel da Ordem Oficial",
+            buffer_excel.getvalue(),
+            file_name="ordem_oficial.xlsx"
         )
