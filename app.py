@@ -1,3 +1,4 @@
+import pdfplumber
 import streamlit as st
 import re
 import pandas as pd
@@ -8,7 +9,7 @@ from docx import Document
 st.set_page_config(layout="wide")
 
 st.title("Reorganizador Inteligente de Descritivo Técnico")
-
+pdf_file = st.file_uploader("Enviar PDF do Termo de Referência", type=["pdf"])
 # ==============================
 # ESCOLHA DA FONTE OFICIAL
 # ==============================
