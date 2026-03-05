@@ -1,5 +1,14 @@
 streamlit//
-pdfplumber
-beautifulsoup4
+pdfplumber//
+beautifulsoup4//
+python-docx//
+openpyxl//
+
+
+
+streamlit
+pandas
 python-docx
 openpyxl
+beautifulsoup4
+lxml
