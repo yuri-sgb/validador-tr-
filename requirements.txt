@@ -1,6 +1,6 @@
 streamlit
+pdfplumber
+beautifulsoup4
 pandas
 python-docx
 openpyxl
-beautifulsoup4
-lxml
