@@ -1,38 +1,54 @@
 import streamlit as st
-import pandas as pd
 import re
 from bs4 import BeautifulSoup
-import pdfplumber
-from docx import Document
-from io import BytesIO
 
-st.set_page_config(page_title="Reorganizador de Descritivo Técnico", layout="wide")
+st.set_page_config(layout="wide")
 
-st.title("Reorganizador Inteligente de Descritivo Técnico")
+st.title("Reorganizador Inteligente de Descritivo Técnico (CATMAT)")
 
-st.write("Envie o HTML do TR e opcionalmente o PDF original para validar a sequência.")
+st.write("Este aplicativo reorganiza automaticamente o descritivo técnico conforme a ordem da tabela do Termo de Referência.")
 
-html_file = st.file_uploader("Enviar HTML completo do TR", type=["html","htm","txt"])
-pdf_file = st.file_uploader("Enviar PDF do TR completo (opcional)", type=["pdf"])
+html_file = st.file_uploader("Enviar HTML completo do TR (tabela + descritivo)", type=["html","txt"])
 
-def extrair_catmat_tabela(html):
-    soup = BeautifulSoup(html, "lxml")
-    tabela = soup.find("table")
+# --------------------------------------------------
+# FUNÇÃO: EXTRAIR ORDEM DA TABELA
+# --------------------------------------------------
+
+def extrair_ordem_tabela(html):
+
+    soup = BeautifulSoup(html, "html.parser")
 
     ordem = []
 
-    for linha in tabela.find_all("tr"):
-        texto = linha.get_text(" ", strip=True)
-        match = re.search(r'\b(\d{6})\b', texto)
-        if match:
-            ordem.append(match.group(1))
+    tabela = soup.find("table")
+
+    if tabela:
+
+        linhas = tabela.find_all("tr")
+
+        for linha in linhas:
+
+            colunas = linha.find_all("td")
+
+            if len(colunas) >= 3:
+
+                numero = colunas[0].get_text(strip=True)
+                catmat = colunas[2].get_text(strip=True)
+
+                if numero.isdigit() and catmat.isdigit():
+
+                    ordem.append(catmat)
 
     return ordem
 
 
+# --------------------------------------------------
+# FUNÇÃO: EXTRAIR BLOCOS DO DESCRITIVO
+# --------------------------------------------------
+
 def extrair_blocos_descritivo(texto):
 
-    blocos = re.split(r'(ITEM\s+\d+)', texto)
+    blocos = re.split(r'(ITEM\s+\d+)', texto, flags=re.IGNORECASE)
 
     resultado = {}
 
@@ -43,88 +59,80 @@ def extrair_blocos_descritivo(texto):
 
         bloco = titulo + conteudo
 
-        match = re.search(r'CATMAT[: ]+(\d+)', bloco)
+        match = re.search(r'CATMAT[^0-9]*(\d{6})', bloco, re.IGNORECASE)
 
         if match:
+
             catmat = match.group(1)
+
             resultado[catmat] = bloco
 
     return resultado
 
 
-def gerar_html(blocos_ordenados):
-
-    html_final = ""
-
-    for i,(catmat,bloco) in enumerate(blocos_ordenados.items(),1):
-
-        html_final += f"<p><b>ITEM {i}</b><br>{bloco}</p><br>"
-
-    return html_final
-
+# --------------------------------------------------
+# PROCESSAMENTO
+# --------------------------------------------------
 
 if html_file:
 
-    html_texto = html_file.read().decode("utf-8")
+    html = html_file.read().decode("utf-8", errors="ignore")
 
-    st.success("HTML carregado")
+    st.success("Arquivo carregado com sucesso.")
 
-    ordem_catmat = extrair_catmat_tabela(html_texto)
+    ordem_catmat = extrair_ordem_tabela(html)
 
-    st.subheader("Ordem detectada na tabela")
+    st.subheader("CATMAT detectados na tabela")
 
-    df = pd.DataFrame({"CATMAT":ordem_catmat})
+    st.write(ordem_catmat)
 
-    st.dataframe(df)
+    blocos = extrair_blocos_descritivo(html)
 
-    texto = BeautifulSoup(html_texto,"lxml").get_text()
+    st.subheader("Blocos encontrados no descritivo")
 
-    blocos = extrair_blocos_descritivo(texto)
+    st.write(len(blocos))
 
-    blocos_ordenados = {}
+    st.write(list(blocos.keys())[:20])
 
-    for catmat in ordem_catmat:
+    if st.button("Aplicar Correção do Descritivo"):
 
-        if catmat in blocos:
-            blocos_ordenados[catmat] = blocos[catmat]
+        blocos_ordenados = {}
 
-    if st.button("GERAR DESCRITIVO CORRIGIDO"):
+        for catmat in ordem_catmat:
 
-        html_final = gerar_html(blocos_ordenados)
+            if catmat in blocos:
 
-        st.subheader("Resultado")
+                blocos_ordenados[catmat] = blocos[catmat]
 
-        st.code(html_final)
+        html_corrigido = ""
 
-        st.download_button(
-            "Baixar HTML corrigido",
-            html_final,
-            file_name="descritivo_corrigido.html"
-        )
+        contador = 1
 
-        doc = Document()
+        for catmat in ordem_catmat:
 
-        for i,(catmat,bloco) in enumerate(blocos_ordenados.items(),1):
+            if catmat in blocos_ordenados:
 
-            doc.add_heading(f"ITEM {i}", level=2)
-            doc.add_paragraph(bloco)
+                bloco = blocos_ordenados[catmat]
 
-        buffer = BytesIO()
-        doc.save(buffer)
+                bloco_corrigido = re.sub(
+                    r'ITEM\s+\d+',
+                    f'ITEM {contador}',
+                    bloco,
+                    count=1,
+                    flags=re.IGNORECASE
+                )
 
-        st.download_button(
-            "Baixar Word",
-            buffer.getvalue(),
-            file_name="descritivo_corrigido.docx"
-        )
+                html_corrigido += bloco_corrigido + "\n\n"
 
-        df2 = pd.DataFrame(blocos_ordenados.items(), columns=["CATMAT","DESCRITIVO"])
+                contador += 1
 
-        excel = BytesIO()
-        df2.to_excel(excel,index=False)
+        st.subheader("Pré-visualização do resultado")
+
+        st.text_area("Resultado", html_corrigido, height=400)
 
         st.download_button(
-            "Baixar Excel",
-            excel.getvalue(),
-            file_name="descritivo_corrigido.xlsx"
+            "Baixar HTML Corrigido",
+            html_corrigido,
+            file_name="descritivo_corrigido.html",
+            mime="text/html"
         )
