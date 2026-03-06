@@ -1,238 +1,130 @@
 import streamlit as st
-import re
 import pandas as pd
+import re
 from bs4 import BeautifulSoup
-from io import BytesIO
+import pdfplumber
 from docx import Document
+from io import BytesIO
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Reorganizador de Descritivo Técnico", layout="wide")
 
 st.title("Reorganizador Inteligente de Descritivo Técnico")
 
-# ==============================
-# ESCOLHA DA FONTE OFICIAL
-# ==============================
+st.write("Envie o HTML do TR e opcionalmente o PDF original para validar a sequência.")
 
-fonte = st.radio(
-    "Selecione a fonte oficial da ordem:",
-    ["HTML (Tabela do TR)", "Manual"]
-)
+html_file = st.file_uploader("Enviar HTML completo do TR", type=["html","htm","txt"])
+pdf_file = st.file_uploader("Enviar PDF do TR completo (opcional)", type=["pdf"])
 
-html_file = st.file_uploader(
-    "Enviar HTML completo (tabela + descritivo)",
-    type=["html", "txt"]
-)
-
-ordem_oficial = {}
-ordem_confirmada = False
-
-# ==============================
-# LER HTML UMA ÚNICA VEZ
-# ==============================
-
-html_content = None
-
-if html_file:
-    html_content = html_file.read().decode("utf-8", errors="ignore")
-
-# ==============================
-# EXTRAÇÃO DA ORDEM PELO HTML
-# ==============================
-
-def extrair_ordem_html(html):
-
-    soup = BeautifulSoup(html, "html.parser")
-
+def extrair_catmat_tabela(html):
+    soup = BeautifulSoup(html, "lxml")
     tabela = soup.find("table")
 
-    ordem = {}
+    ordem = []
 
-    if tabela:
-
-        linhas = tabela.find_all("tr")
-
-        for linha in linhas:
-
-            colunas = linha.find_all("td")
-
-            if len(colunas) >= 3:
-
-                numero = colunas[0].get_text(strip=True)
-                catmat = colunas[2].get_text(strip=True)
-
-                if numero.isdigit() and catmat.isdigit():
-
-                    ordem[catmat] = int(numero)
+    for linha in tabela.find_all("tr"):
+        texto = linha.get_text(" ", strip=True)
+        match = re.search(r'\b(\d{6})\b', texto)
+        if match:
+            ordem.append(match.group(1))
 
     return ordem
 
 
-# ==============================
-# ORDEM MANUAL
-# ==============================
+def extrair_blocos_descritivo(texto):
 
-if fonte == "Manual":
+    blocos = re.split(r'(ITEM\s+\d+)', texto)
 
-    texto_manual = st.text_area(
-        "Cole no formato:\n1 - 430290\n2 - 250363",
-        height=200
-    )
+    resultado = {}
 
-    if st.button("Gerar Ordem Manual"):
+    for i in range(1, len(blocos), 2):
 
-        linhas = texto_manual.split("\n")
+        titulo = blocos[i]
+        conteudo = blocos[i+1]
 
-        for linha in linhas:
+        bloco = titulo + conteudo
 
-            if "-" in linha:
+        match = re.search(r'CATMAT[: ]+(\d+)', bloco)
 
-                partes = linha.split("-")
+        if match:
+            catmat = match.group(1)
+            resultado[catmat] = bloco
 
-                numero = partes[0].strip()
-                catmat = partes[1].strip()
-
-                if numero.isdigit() and catmat.isdigit():
-
-                    ordem_oficial[catmat] = int(numero)
-
-        ordem_confirmada = True
+    return resultado
 
 
-# ==============================
-# ORDEM VIA HTML
-# ==============================
+def gerar_html(blocos_ordenados):
 
-if fonte == "HTML (Tabela do TR)" and html_content:
+    html_final = ""
 
-    ordem_oficial = extrair_ordem_html(html_content)
+    for i,(catmat,bloco) in enumerate(blocos_ordenados.items(),1):
 
-    if ordem_oficial:
+        html_final += f"<p><b>ITEM {i}</b><br>{bloco}</p><br>"
 
-        df_ordem = pd.DataFrame(
-            [{"CATMAT": k, "Número Oficial": v} for k, v in ordem_oficial.items()]
-        ).sort_values("Número Oficial")
-
-        st.subheader("Ordem detectada na Tabela")
-
-        st.dataframe(df_ordem)
-
-        if st.button("Confirmar Ordem da Tabela"):
-
-            ordem_confirmada = True
+    return html_final
 
 
-# ==============================
-# PROCESSAMENTO DO DESCRITIVO
-# ==============================
+if html_file:
 
-def separar_blocos(html):
+    html_texto = html_file.read().decode("utf-8")
 
-    return re.split(r'(?=<p class="Item_Nivel2">)', html)
+    st.success("HTML carregado")
 
+    ordem_catmat = extrair_catmat_tabela(html_texto)
 
-def extrair_catmat(bloco):
+    st.subheader("Ordem detectada na tabela")
 
-    match = re.search(r'CATMAT:</strong>\s*(\d+)', bloco)
+    df = pd.DataFrame({"CATMAT":ordem_catmat})
 
-    return match.group(1) if match else None
+    st.dataframe(df)
 
+    texto = BeautifulSoup(html_texto,"lxml").get_text()
 
-def substituir_numero(bloco, novo_numero):
+    blocos = extrair_blocos_descritivo(texto)
 
-    return re.sub(
-        r'(<strong[^>]*>Item\s*)\d+(:</strong>)',
-        rf'\g<1>{novo_numero}\2',
-        bloco,
-        count=1
-    )
+    blocos_ordenados = {}
 
+    for catmat in ordem_catmat:
 
-# ==============================
-# APLICAR CORREÇÃO
-# ==============================
+        if catmat in blocos:
+            blocos_ordenados[catmat] = blocos[catmat]
 
-if ordem_confirmada and html_content:
+    if st.button("GERAR DESCRITIVO CORRIGIDO"):
 
-    st.success("Ordem oficial confirmada.")
+        html_final = gerar_html(blocos_ordenados)
 
-    if st.button("Aplicar Correção ao Descritivo"):
+        st.subheader("Resultado")
 
-        blocos = separar_blocos(html_content)
-
-        blocos_por_catmat = {}
-
-        for bloco in blocos:
-
-            catmat = extrair_catmat(bloco)
-
-            if catmat:
-
-                blocos_por_catmat[catmat] = bloco
-
-        novo_html = ""
-
-        for catmat, numero_correto in sorted(ordem_oficial.items(), key=lambda x: x[1]):
-
-            if catmat in blocos_por_catmat:
-
-                bloco_original = blocos_por_catmat[catmat]
-
-                bloco_corrigido = substituir_numero(
-                    bloco_original,
-                    numero_correto
-                )
-
-                novo_html += bloco_corrigido
-
-        st.subheader("Pré-visualização do HTML corrigido")
-
-        st.code(novo_html[:3000], language="html")
-
-        # ==============================
-        # DOWNLOAD HTML
-        # ==============================
+        st.code(html_final)
 
         st.download_button(
-            "Baixar HTML Corrigido",
-            novo_html,
-            file_name="descritivo_corrigido.html",
-            mime="text/html"
+            "Baixar HTML corrigido",
+            html_final,
+            file_name="descritivo_corrigido.html"
         )
-
-        # ==============================
-        # GERAR WORD
-        # ==============================
 
         doc = Document()
 
-        doc.add_paragraph("Descritivo Técnico Corrigido")
+        for i,(catmat,bloco) in enumerate(blocos_ordenados.items(),1):
 
-        doc.add_paragraph(novo_html)
+            doc.add_heading(f"ITEM {i}", level=2)
+            doc.add_paragraph(bloco)
 
-        buffer_word = BytesIO()
-
-        doc.save(buffer_word)
+        buffer = BytesIO()
+        doc.save(buffer)
 
         st.download_button(
             "Baixar Word",
-            buffer_word.getvalue(),
+            buffer.getvalue(),
             file_name="descritivo_corrigido.docx"
         )
 
-        # ==============================
-        # GERAR EXCEL ORDEM
-        # ==============================
+        df2 = pd.DataFrame(blocos_ordenados.items(), columns=["CATMAT","DESCRITIVO"])
 
-        df_export = pd.DataFrame(
-            [{"CATMAT": k, "Número Oficial": v} for k, v in ordem_oficial.items()]
-        ).sort_values("Número Oficial")
-
-        buffer_excel = BytesIO()
-
-        df_export.to_excel(buffer_excel, index=False)
+        excel = BytesIO()
+        df2.to_excel(excel,index=False)
 
         st.download_button(
-            "Baixar Excel da Ordem Oficial",
-            buffer_excel.getvalue(),
-            file_name="ordem_oficial.xlsx"
+            "Baixar Excel",
+            excel.getvalue(),
+            file_name="descritivo_corrigido.xlsx"
         )
